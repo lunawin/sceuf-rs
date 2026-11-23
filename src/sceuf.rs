@@ -2,7 +2,7 @@ use std::io::{self, Read};
 
 const SCEUF_MAGIC: &[u8; 8] = b"SCEUF\0\0\0";
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceufSegmentTableEntry {
     pub id: u64,
     pub offset: u64,
@@ -10,13 +10,48 @@ pub struct SceufSegmentTableEntry {
     pub signing_algorithm: u32,
     pub _padding: [u8; 4],
 }
-#[derive(Debug)]
+
+impl SceufSegmentTableEntry {
+    pub fn from_reader(reader: &mut impl Read) -> io::Result<Self> {
+        let id = read_u64be(reader)?;
+        let offset = read_u64be(reader)?;
+        let size = read_u64be(reader)?;
+        let signing_algorithm = read_u32be(reader)?;
+        let mut _padding = [0u8; 4];
+        reader.read_exact(&mut _padding)?;
+        Ok(Self {
+            id,
+            offset,
+            size,
+            signing_algorithm,
+            _padding,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceufDigestTableEntry {
     pub segment_index: u64,
     pub digest: [u8; 0x14],
     pub _padding: [u8; 4],
 }
-#[derive(Debug)]
+
+impl SceufDigestTableEntry {
+    pub fn from_reader(reader: &mut impl Read) -> io::Result<Self> {
+        let segment_index = read_u64be(reader)?;
+        let mut digest = [0u8; 0x14];
+        let mut _padding = [0u8; 4];
+        reader.read_exact(&mut digest)?;
+        reader.read_exact(&mut _padding)?;
+        Ok(Self {
+            segment_index,
+            digest,
+            _padding,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SceufHeader {
     pub magic: [u8; 8],
     pub format_version: u64,
@@ -48,19 +83,19 @@ impl SceufHeader {
         let mut _padding = [0u8; 0xC];
 
         for _ in 0..segment_amount {
-            let segment_table = sceuf_parse_segment_table_entry(reader)?;
+            let segment_table = SceufSegmentTableEntry::from_reader(reader)?;
             segment_tables.push(segment_table);
         }
 
         for _ in 0..segment_amount {
-            let digest_table = sceuf_parse_digest_table_entry(reader)?;
+            let digest_table = SceufDigestTableEntry::from_reader(reader)?;
             digest_tables.push(digest_table);
         }
 
         reader.read_exact(&mut digest)?;
         reader.read_exact(&mut _padding)?;
 
-        Ok(SceufHeader {
+        Ok(Self {
             magic,
             format_version,
             image_version,
@@ -85,33 +120,4 @@ fn read_u32be(reader: &mut impl Read) -> io::Result<u32> {
     let mut buf = [0u8; 4];
     reader.read_exact(&mut buf)?;
     Ok(u32::from_be_bytes(buf))
-}
-
-fn sceuf_parse_segment_table_entry(reader: &mut impl Read) -> io::Result<SceufSegmentTableEntry> {
-    let id = read_u64be(reader)?;
-    let offset = read_u64be(reader)?;
-    let size = read_u64be(reader)?;
-    let signing_algorithm = read_u32be(reader)?;
-    let mut _padding = [0u8; 4];
-    reader.read_exact(&mut _padding)?;
-    Ok(SceufSegmentTableEntry {
-        id,
-        offset,
-        size,
-        signing_algorithm,
-        _padding,
-    })
-}
-
-fn sceuf_parse_digest_table_entry(reader: &mut impl Read) -> io::Result<SceufDigestTableEntry> {
-    let segment_index = read_u64be(reader)?;
-    let mut digest = [0u8; 0x14];
-    let mut _padding = [0u8; 4];
-    reader.read_exact(&mut digest)?;
-    reader.read_exact(&mut _padding)?;
-    Ok(SceufDigestTableEntry {
-        segment_index,
-        digest,
-        _padding,
-    })
 }

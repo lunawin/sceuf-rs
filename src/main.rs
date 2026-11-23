@@ -12,5 +12,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("File offset: {}", header.file_offset);
     println!("File size: {}", header.file_size);
 
+    for segment in header.segment_table {
+        println!("Id: 0x{:X}", segment.id);
+        println!("Offset: 0x{:X}", segment.offset);
+        println!("Size: 0x{:X}", segment.size);
+    }
+
     Ok(())
 }

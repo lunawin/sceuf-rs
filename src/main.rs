@@ -13,9 +13,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("File size: {}", header.file_size);
 
     for segment in header.segment_table {
-        println!("Id: 0x{:X}", segment.id);
+        println!("=======");
         println!("Offset: 0x{:X}", segment.offset);
         println!("Size: 0x{:X}", segment.size);
+
+        let filename = match segment.id.filename() {
+            Some(name) => String::from(name),
+            None => format!("unknown_0x{:X}.bin", segment.id.as_u64()),
+        };
+
+        let mut to_write = File::create(format!("unpacked_pup/{}", filename))?;
+        segment.extract_to(&mut to_write, &mut file)?;
     }
 
     Ok(())

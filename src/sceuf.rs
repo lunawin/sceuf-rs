@@ -1,10 +1,91 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, Write};
 
 const SCEUF_MAGIC: &[u8; 8] = b"SCEUF\0\0\0";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SegmentId {
+    Version,
+    License,
+    PromoFlags,
+    UpdateFlags,
+    PatchBuild,
+    Ps3swu,
+    Vsh,
+    Dots,
+    PatchData,
+    UpdateFiles,
+    SpkgHdr,
+    Ps3swu2,
+    Unknown(u64),
+}
+
+impl SegmentId {
+    pub fn filename(self) -> Option<&'static str> {
+        match self {
+            Self::Version => Some("version.txt"),
+            Self::License => Some("license.xml"),
+            Self::PromoFlags => Some("promo_flags.txt"),
+            Self::UpdateFlags => Some("update_flags.txt"),
+            Self::PatchBuild => Some("patch_build.txt"),
+            Self::Ps3swu => Some("ps3swu.self"),
+            Self::Vsh => Some("vsh.tar"),
+            Self::Dots => Some("dots.txt"),
+            Self::PatchData => Some("patch_data.pkg"),
+            Self::UpdateFiles => Some("update_files.tar"),
+            Self::SpkgHdr => Some("spkg_hdr.tar"),
+            Self::Ps3swu2 => Some("ps3swu2.self"),
+            Self::Unknown(_) => None,
+        }
+    }
+
+    pub fn as_u64(self) -> u64 {
+        match self {
+            Self::Version => 0x100,
+            Self::License => 0x101,
+            Self::PromoFlags => 0x102,
+            Self::UpdateFlags => 0x103,
+            Self::PatchBuild => 0x104,
+            Self::Ps3swu => 0x200,
+            Self::Vsh => 0x201,
+            Self::Dots => 0x202,
+            Self::PatchData => 0x203,
+            Self::UpdateFiles => 0x300,
+            Self::SpkgHdr => 0x501,
+            Self::Ps3swu2 => 0x601,
+            Self::Unknown(id) => id,
+        }
+    }
+}
+
+impl From<u64> for SegmentId {
+    fn from(id: u64) -> Self {
+        match id {
+            0x100 => Self::Version,
+            0x101 => Self::License,
+            0x102 => Self::PromoFlags,
+            0x103 => Self::UpdateFlags,
+            0x104 => Self::PatchBuild,
+            0x200 => Self::Ps3swu,
+            0x201 => Self::Vsh,
+            0x202 => Self::Dots,
+            0x203 => Self::PatchData,
+            0x300 => Self::UpdateFiles,
+            0x501 => Self::SpkgHdr,
+            0x601 => Self::Ps3swu2,
+            _ => Self::Unknown(id),
+        }
+    }
+}
+
+impl From<SegmentId> for u64 {
+    fn from(id: SegmentId) -> Self {
+        id.as_u64()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceufSegmentTableEntry {
-    pub id: u64,
+    pub id: SegmentId,
     pub offset: u64,
     pub size: u64,
     pub signing_algorithm: u32,
@@ -13,7 +94,7 @@ pub struct SceufSegmentTableEntry {
 
 impl SceufSegmentTableEntry {
     pub fn from_reader(reader: &mut impl Read) -> io::Result<Self> {
-        let id = read_u64be(reader)?;
+        let id = SegmentId::from(read_u64be(reader)?);
         let offset = read_u64be(reader)?;
         let size = read_u64be(reader)?;
         let signing_algorithm = read_u32be(reader)?;
@@ -26,6 +107,17 @@ impl SceufSegmentTableEntry {
             signing_algorithm,
             _padding,
         })
+    }
+
+    pub fn extract_to(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut (impl Read + Seek),
+    ) -> io::Result<u64> {
+        reader.seek(io::SeekFrom::Start(self.offset))?;
+        let mut taken_reader = reader.take(self.size);
+        let copied = io::copy(&mut taken_reader, writer)?;
+        Ok(copied)
     }
 }
 

@@ -3,11 +3,11 @@ use sha1::Sha1;
 use std::io::{self, Read, Seek, Write};
 
 const SCEUF_MAGIC: &[u8; 8] = b"SCEUF\0\0\0";
-const PS3_PUP_HMAC_KEY: [u8; 64] = [
+pub const PS3_PUP_HMAC_KEY: [u8; 64] = [
     0xF4, 0x91, 0xAD, 0x94, 0xC6, 0x81, 0x10, 0x96, 0x91, 0x5F, 0xD5, 0xD2, 0x44, 0x81, 0xAE, 0xDC,
     0xED, 0xED, 0xBE, 0x6B, 0xE5, 0x13, 0x72, 0x4D, 0xD8, 0xF7, 0xB6, 0x91, 0xE8, 0x8A, 0x38, 0xF4,
     0xB5, 0x16, 0x2B, 0xFB, 0xEC, 0xBE, 0x3A, 0x62, 0x18, 0x5D, 0xD7, 0xC9, 0x4D, 0xA2, 0x22, 0x5A,
-    0xDA, 0x3F, 0xBF, 0xCE, 0x55, 0xB9, 0xEA, 0x96, 0x49, 0x82, 0x9E, 0xB3, 0x0C, 0xE8, 0x36, 0x6B,
+    0xDA, 0x3F, 0xBF, 0xCE, 0x55, 0x5B, 0x9E, 0xA9, 0x64, 0x98, 0x29, 0xEB, 0x30, 0xCE, 0x83, 0x66,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -207,6 +207,65 @@ impl SceufHeader {
             digest,
             _padding,
         })
+    }
+
+    pub fn validate_segment(
+        &self,
+        reader: &mut (impl Read + Seek),
+        segment: &SceufSegmentTableEntry,
+        digest: &SceufDigestTableEntry,
+        key: &[u8],
+    ) -> io::Result<bool> {
+        if segment.signing_algorithm != 0 {
+            return Ok(false);
+        }
+        reader.seek(io::SeekFrom::Start(segment.offset))?;
+        let mut taken = reader.take(segment.size);
+        let mut hasher = Hmac::<Sha1>::new_from_slice(key).expect("HMAC excepts any key.");
+        let mut remaining = segment.size;
+
+        let mut buf = [0u8; 8192];
+        while remaining > 8192 {
+            taken.read_exact(&mut buf)?;
+            hasher.update(&buf);
+            remaining -= 8192;
+        }
+        let rem = usize::try_from(remaining).expect("<= 1024");
+        taken.read_exact(&mut buf[..rem])?;
+        hasher.update(&mut buf[..rem]);
+        return Ok(hasher.verify_slice(&digest.digest).is_ok());
+    }
+
+    pub fn validate(&self, reader: &mut (impl Read + Seek), key: &[u8]) -> io::Result<bool> {
+        let mut hasher = Hmac::<Sha1>::new_from_slice(key).expect("HMAC expects any key.");
+        reader.seek(io::SeekFrom::Start(0))?;
+
+        let size = 0x30 + (0x40 * self.segment_table.len());
+        if u64::try_from(size + 0x20).expect("Invalid size?") != self.file_offset {
+            return Ok(false);
+        }
+
+        let mut buf = [0u8; 0x10];
+        for _ in 0..(size / 0x10) {
+            reader.read_exact(&mut buf)?;
+            hasher.update(&buf);
+        }
+        if hasher.verify_slice(&self.digest).is_err() {
+            return Ok(false);
+        }
+
+        for digest in &self.digest_table {
+            let is_valid = self.validate_segment(
+                reader,
+                &self.segment_table[usize::try_from(digest.segment_index).expect("Invalid size?")],
+                digest,
+                key,
+            )?;
+            if !is_valid {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
 

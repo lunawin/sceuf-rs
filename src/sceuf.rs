@@ -280,3 +280,89 @@ fn read_u32be(reader: &mut impl Read) -> io::Result<u32> {
     reader.read_exact(&mut buf)?;
     Ok(u32::from_be_bytes(buf))
 }
+
+// yes i know theres MUCH better way to do this rather than repeated
+// sequential write_all's but give it up! i just wanna be done already
+pub fn pack(
+    output: &mut (impl Write + Seek + Read),
+    segments: &mut [(SegmentId, &mut impl Read)],
+    image_version: [u8; 8],
+    key: &[u8],
+) -> io::Result<()> {
+    if segments.len() > 125 {
+        panic!("pack only handles <125 segments.");
+    }
+
+    let format_version = (1u64).to_be_bytes();
+    let segment_amount = u64::try_from(segments.len())
+        .expect("Invalid size.")
+        .to_be_bytes();
+    let file_offset = (0x50 + (0x40 * segments.len())).to_be_bytes();
+
+    let pos_file_start = output.stream_position()?;
+    output.write_all(SCEUF_MAGIC)?;
+    output.write_all(&format_version)?;
+    output.write_all(&image_version)?;
+    output.write_all(&segment_amount)?;
+    output.write_all(&file_offset)?;
+    output.write_all(&((0u64).to_be_bytes()))?;
+
+    let pos_segment_tables = output.stream_position()?;
+    for _ in 0..segments.len() {
+        output.write_all(&[0u8; 0x20])?;
+    }
+    let pos_digest_tables = output.stream_position()?;
+    for _ in 0..segments.len() {
+        output.write_all(&[0u8; 0x20])?;
+    }
+    output.write_all(&[0u8; 0x14])?;
+    output.write_all(&[0u8; 0xC])?;
+    let pos_end_of_header = output.stream_position()?;
+    let mut seg_last_pos = output.stream_position()?;
+
+    let mut buf = [0u8; 8192];
+    for i in 0..segments.len() {
+        let mut hasher = Hmac::<Sha1>::new_from_slice(&key).expect("HMAC accepts all keys");
+        let segment = &mut segments[i];
+        loop {
+            let read = segment.1.read(&mut buf)?;
+            if read == 0 {
+                break;
+            }
+            output.write_all(&buf[..read])?;
+            hasher.update(&buf[0..read]);
+        }
+        let seg_new_pos = output.stream_position()?;
+
+        output.seek(io::SeekFrom::Start(pos_segment_tables + 0x20 * (i as u64)))?;
+        output.write_all(&segment.0.as_u64().to_be_bytes())?;
+        output.write_all(&(seg_last_pos - pos_file_start).to_be_bytes())?;
+        output.write_all(&(seg_new_pos - seg_last_pos).to_be_bytes())?;
+        output.write_all(&(0u64).to_be_bytes())?; // double as both (u32)sign=0 and (u32)padding=0
+
+        let hash: [u8; 0x14] = hasher.finalize().into_bytes().into();
+        output.seek(io::SeekFrom::Start(pos_digest_tables + 0x20 * (i as u64)))?;
+        output.write_all(&(i as u64).to_be_bytes())?;
+        output.write_all(&hash)?;
+        output.write_all(&(0u32).to_be_bytes())?;
+
+        seg_last_pos = seg_new_pos;
+        output.seek(io::SeekFrom::Start(seg_new_pos))?;
+    }
+
+    let file_size = seg_last_pos - pos_end_of_header;
+    output.seek(io::SeekFrom::Start(pos_file_start + 40))?;
+    output.write_all(&file_size.to_be_bytes())?;
+
+    let mut header_hasher = Hmac::<Sha1>::new_from_slice(&key).expect("HMAC accepts all keys");
+    let to_read = 0x30 + (0x40 * segments.len());
+    output.seek(io::SeekFrom::Start(pos_file_start))?;
+    output.read_exact(&mut buf[..to_read])?;
+    header_hasher.update(&buf[..to_read]);
+
+    let hash: [u8; 0x14] = header_hasher.finalize().into_bytes().into();
+    output.write_all(&hash)?;
+    output.seek(io::SeekFrom::Start(seg_last_pos))?;
+
+    Ok(())
+}
